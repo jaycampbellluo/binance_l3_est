@@ -33,3 +33,7 @@ The chart dynamically updates as new WebSocket messages are received, and the ba
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ---
+
+## Todo
+
+- [ ] Add Cluster Algo on orders and display them with different color
