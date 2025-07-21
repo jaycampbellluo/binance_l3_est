@@ -1,6 +1,9 @@
 # BINANCE PERP L3 Order Book Estimator
 
+![Demo GIF](demo.gif)
+
 This project is a real-time visualization tool for the Binance perpetual swap order book. The tool uses L2 data's change in time to naively estimate a L3 order book microstructure. we change change to more complex model to estimate the L3 book later.
+
 ## Features
 
 * **Real-time Data**: Streams order book data using Binance's WebSocket API.
