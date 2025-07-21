@@ -319,18 +319,39 @@ impl eframe::App for MyApp {
 
                     let step = 1.0;
                     let mut bars: Vec<Bar> = Vec::new();
-                    let previous_bar_y: Option<f64> = None;
+                    // Compute max individual order sizes
+                    let max_bid_order: Decimal = self
+                        .bids
+                        .values()
+                        .rev()
+                        .take(100)
+                        .flat_map(|dq| dq.iter())
+                        .cloned()
+                        .max()
+                        .unwrap_or(Decimal::ZERO);
+                    let max_ask_order: Decimal = self
+                        .asks
+                        .values()
+                        .take(100)
+                        .flat_map(|dq| dq.iter())
+                        .cloned()
+                        .max()
+                        .unwrap_or(Decimal::ZERO);
 
                     // Color Mapping for Asks
                     for (i, (_, qty_deq)) in self.asks.iter().take(100).enumerate() {
                         let x = (i as f64 + 0.5) * step + 0.5;
                         let mut offset = 0.0;
 
-                        for (i, &qty) in qty_deq.iter().enumerate() {
+                        for (j, &qty) in qty_deq.iter().enumerate() {
                             if qty <= dec!(0.0) {
                                 continue;
                             }
-                            let color = self.get_order_color(i, Color32::DARK_RED);
+                            let color = if qty == max_ask_order {
+                                Color32::GOLD
+                            } else {
+                                self.get_order_color(j, Color32::DARK_RED)
+                            };
                             let bar = Bar::new(x, qty.to_f64().unwrap_or(0.0))
                                 .fill(color)
                                 .base_offset(offset)
@@ -345,11 +366,15 @@ impl eframe::App for MyApp {
                         let x = -(i as f64 + 0.5) * step - 0.5;
                         let mut offset = 0.0;
 
-                        for (i, &qty) in qty_deq.iter().enumerate() {
+                        for (j, &qty) in qty_deq.iter().enumerate() {
                             if qty <= dec!(0.0) {
                                 continue;
                             }
-                            let color = self.get_order_color(i, Color32::DARK_GREEN);
+                            let color = if qty == max_bid_order {
+                                Color32::GOLD
+                            } else {
+                                self.get_order_color(j, Color32::DARK_GREEN)
+                            };
                             let bar = Bar::new(x, qty.to_f64().unwrap_or(0.0))
                                 .fill(color)
                                 .base_offset(offset)
