@@ -66,7 +66,6 @@ fn main() -> eframe::Result {
 }
 
 struct MyApp {
-    symbol: String,
     bids: BTreeMap<Decimal, VecDeque<Decimal>>,
     asks: BTreeMap<Decimal, VecDeque<Decimal>>,
     last_applied_u: u64,
@@ -90,7 +89,6 @@ impl MyApp {
         });
 
         Self {
-            symbol,
             bids: BTreeMap::new(),
             asks: BTreeMap::new(),
             last_applied_u: 0,
@@ -108,7 +106,7 @@ impl MyApp {
         symbol: String, // Accept the symbol as a parameter
     ) {
         loop {
-            let ws_url_str = format!("wss://fstream.binance.com/ws/{}@depth@0ms", symbol); // Use symbol
+            let ws_url_str = format!("wss://fstream.binance.com/ws/{symbol}@depth@0ms"); // Use symbol
             let (mut ws_stream, response) = match connect_async(ws_url_str).await {
                 Ok(pair) => pair,
                 Err(e) => {
@@ -156,8 +154,7 @@ impl MyApp {
 
             let client = reqwest::Client::new();
             let snap_url = format!(
-                "https://fapi.binance.com/fapi/v1/depth?symbol={}&limit=1000",
-                symbol
+                "https://fapi.binance.com/fapi/v1/depth?symbol={symbol}&limit=1000"
             ); // Use symbol
             match client.get(snap_url).send().await {
                 Ok(resp) => match resp.json::<OrderBookSnapshot>().await {
@@ -337,8 +334,30 @@ impl eframe::App for MyApp {
                         .cloned()
                         .max()
                         .unwrap_or(Decimal::ZERO);
+                    let second_max_bid_order = {
+                        let mut orders: Vec<_> = self
+                            .bids
+                            .values()
+                            .rev()
+                            .take(100)
+                            .flat_map(|dq| dq.iter())
+                            .cloned()
+                            .collect();
+                        orders.sort_by(|a, b| b.cmp(a)); // Sort in descending order
+                        orders.get(1).cloned().unwrap_or(Decimal::ZERO)
+                    };
+                    let second_max_ask_order = {
+                        let mut orders: Vec<_> = self
+                            .asks
+                            .values()
+                            .take(100)
+                            .flat_map(|dq| dq.iter())
+                            .cloned()
+                            .collect();
+                        orders.sort_by(|a, b| b.cmp(a)); // Sort in descending order
+                        orders.get(1).cloned().unwrap_or(Decimal::ZERO)
+                    };
 
-                    // Color Mapping for Asks
                     for (i, (_, qty_deq)) in self.asks.iter().take(100).enumerate() {
                         let x = (i as f64 + 0.5) * step + 0.5;
                         let mut offset = 0.0;
@@ -349,6 +368,8 @@ impl eframe::App for MyApp {
                             }
                             let color = if qty == max_ask_order {
                                 Color32::GOLD
+                            } else if qty == second_max_ask_order {
+                                Color32::from_rgb(184, 134, 11)
                             } else {
                                 self.get_order_color(j, Color32::DARK_RED)
                             };
@@ -372,6 +393,8 @@ impl eframe::App for MyApp {
                             }
                             let color = if qty == max_bid_order {
                                 Color32::GOLD
+                            } else if qty == second_max_bid_order {
+                                Color32::from_rgb(184, 134, 11)
                             } else {
                                 self.get_order_color(j, Color32::DARK_GREEN)
                             };
