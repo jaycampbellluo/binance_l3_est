@@ -66,6 +66,7 @@ fn main() -> eframe::Result {
 }
 
 struct MyApp {
+    symbol: String,
     bids: BTreeMap<Decimal, VecDeque<Decimal>>,
     asks: BTreeMap<Decimal, VecDeque<Decimal>>,
     last_applied_u: u64,
@@ -89,6 +90,7 @@ impl MyApp {
         });
 
         Self {
+            symbol,
             bids: BTreeMap::new(),
             asks: BTreeMap::new(),
             last_applied_u: 0,
@@ -247,7 +249,7 @@ impl eframe::App for MyApp {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("DOGEUSDT Perpetual Order Book");
+            ui.heading(format!("{} Perpetual Order Book", self.symbol.to_uppercase()));
 
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
@@ -259,7 +261,7 @@ impl eframe::App for MyApp {
                             ui.label("Quantity");
                             ui.end_row();
 
-                            for (price, qty) in self.asks.iter().take(20) {
+                            for (price, qty) in self.asks.iter().take(20).rev() {
                                 ui.label("");
                                 ui.label(format!("{:.5}", price.to_f64().unwrap_or(0.0)));
                                 ui.label(format!(
