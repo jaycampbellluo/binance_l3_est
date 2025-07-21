@@ -6,6 +6,7 @@ use rust_decimal::Decimal;
 use rust_decimal::prelude::*;
 use serde::Deserialize;
 use std::collections::{BTreeMap, VecDeque};
+use std::env;
 use std::sync::mpsc::{self as std_mpsc, Receiver as StdReceiver, Sender as StdSender};
 use std::thread;
 use tokio::sync::mpsc::{self, Receiver, Sender};
@@ -48,15 +49,24 @@ enum AppMessage {
 }
 
 fn main() -> eframe::Result {
+    // Fetch the symbol from command-line arguments or default to DOGEUSDT
+    let args: Vec<String> = env::args().collect();
+    let symbol: String = if args.len() > 1 {
+        args[1].to_ascii_lowercase()
+    } else {
+        "dogeusdt".to_string()
+    };
+
     let options = eframe::NativeOptions::default();
     eframe::run_native(
-        "DOGEUSDT Order Book Visualizer",
+        "Order Book Visualizer",
         options,
-        Box::new(|cc| Ok(Box::new(MyApp::new(cc)))),
+        Box::new(move |cc| Ok(Box::new(MyApp::new(cc, symbol)))),
     )
 }
 
 struct MyApp {
+    symbol: String,
     bids: BTreeMap<Decimal, VecDeque<Decimal>>,
     asks: BTreeMap<Decimal, VecDeque<Decimal>>,
     last_applied_u: u64,
@@ -67,19 +77,20 @@ struct MyApp {
 }
 
 impl MyApp {
-    fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, symbol: String) -> Self {
         let (tx, rx) = std_mpsc::channel();
         let (refetch_tx, refetch_rx) = mpsc::channel(1);
         let ctx = cc.egui_ctx.clone();
-
+        let s = symbol.clone();
         thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
-                Self::fetch_and_stream_loop(&tx, &ctx, refetch_rx).await;
+                Self::fetch_and_stream_loop(&tx, &ctx, refetch_rx, s).await;
             });
         });
 
         Self {
+            symbol,
             bids: BTreeMap::new(),
             asks: BTreeMap::new(),
             last_applied_u: 0,
@@ -94,9 +105,10 @@ impl MyApp {
         tx: &StdSender<AppMessage>,
         ctx: &egui::Context,
         mut refetch_rx: Receiver<()>,
+        symbol: String, // Accept the symbol as a parameter
     ) {
         loop {
-            let ws_url_str = "wss://fstream.binance.com/ws/dogeusdt@depth@0ms";
+            let ws_url_str = format!("wss://fstream.binance.com/ws/{}@depth@0ms", symbol); // Use symbol
             let (mut ws_stream, response) = match connect_async(ws_url_str).await {
                 Ok(pair) => pair,
                 Err(e) => {
@@ -143,7 +155,10 @@ impl MyApp {
             });
 
             let client = reqwest::Client::new();
-            let snap_url = "https://fapi.binance.com/fapi/v1/depth?symbol=DOGEUSDT&limit=1000";
+            let snap_url = format!(
+                "https://fapi.binance.com/fapi/v1/depth?symbol={}&limit=1000",
+                symbol
+            ); // Use symbol
             match client.get(snap_url).send().await {
                 Ok(resp) => match resp.json::<OrderBookSnapshot>().await {
                     Ok(snap) => {
@@ -395,7 +410,7 @@ impl MyApp {
     // Function to calculate color based on the order index
     fn get_order_color(&self, index: usize, base_color: Color32) -> Color32 {
         // Brighten the color by 5% for each order index
-        let brightening_factor = 1.0 + 0.075 * index as f32; // 5% brighter per order
+        let brightening_factor = 1.0 + 0.05 * index as f32; // 5% brighter per order
         let r = (base_color.r() as f32 * brightening_factor).min(255.0) as u8;
         let g = (base_color.g() as f32 * brightening_factor).min(255.0) as u8;
         let b = (base_color.b() as f32 * brightening_factor).min(255.0) as u8;
