@@ -18,7 +18,7 @@ env_logger = { version = "0.11", default-features = false, features = [
     "auto-color",
     "humantime",
 ] }
-reqwest = { version = "0.12.22", features = ["json"] }
+reqwest = { version = "0.12.22", features = ["json", "blocking"] }
 rust_decimal = { version = "1.37.2", features = ["macros"] }
 egui_plot = "0.33.0"
 rand = "0.9.1"

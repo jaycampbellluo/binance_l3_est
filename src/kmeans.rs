@@ -81,11 +81,11 @@ impl MiniBatchKMeans {
         }
 
         // Mini-batch updates
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         for _ in 0..self.max_iter {
             // Select mini-batch
             let batch_indices: Vec<usize> = (0..self.batch_size.min(points.len()))
-                .map(|_| rng.gen_range(0..points.len()))
+                .map(|_| rng.random_range(0..points.len()))
                 .collect();
 
             let mut counts = vec![0; self.num_clusters];

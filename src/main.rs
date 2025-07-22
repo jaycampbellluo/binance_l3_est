@@ -16,6 +16,27 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
 
 #[derive(Deserialize)]
+struct ExchangeInfo {
+    symbols: Vec<SymbolInfo>,
+}
+
+#[derive(Deserialize)]
+struct SymbolInfo {
+    symbol: String,
+    filters: Vec<Filter>,
+}
+
+#[derive(Deserialize)]
+struct Filter {
+    #[serde(rename = "filterType")]
+    filter_type: String,
+    #[serde(rename = "tickSize")]
+    tick_size: Option<String>,
+    #[serde(rename = "stepSize")]
+    step_size: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct OrderBookSnapshot {
     #[serde(rename = "lastUpdateId")]
     last_update_id: u64,
@@ -102,6 +123,8 @@ struct MyApp {
     update_buffer: VecDeque<DepthUpdate>,
     refetch_tx: Sender<()>,
     kmeans_mode: bool,
+    price_prec: usize,
+    qty_prec: usize,
 }
 
 impl MyApp {
@@ -117,6 +140,31 @@ impl MyApp {
             });
         });
 
+        let upper_symbol = symbol.to_uppercase();
+        let url = "https://fapi.binance.com/fapi/v1/exchangeInfo".to_string();
+        let mut price_prec = 2;
+        let mut qty_prec = 2;
+        if let Ok(resp) = reqwest::blocking::get(&url)
+            && let Ok(info) = resp.json::<ExchangeInfo>()
+                && let Some(sym_info) = info.symbols.into_iter().find(|s| s.symbol == upper_symbol) {
+                    for filter in sym_info.filters {
+                        if filter.filter_type == "PRICE_FILTER" {
+                            if let Some(ts) = filter.tick_size {
+                                let tick_size = ts.parse::<f64>().unwrap_or(1.0);
+                                if tick_size > 0.0 {
+                                    price_prec = (-tick_size.log10()).ceil() as usize;
+                                }
+                            }
+                        } else if filter.filter_type == "LOT_SIZE"
+                            && let Some(ss) = filter.step_size {
+                                let step_size = ss.parse::<f64>().unwrap_or(1.0);
+                                if step_size > 0.0 {
+                                    qty_prec = (-step_size.log10()).ceil() as usize;
+                                }
+                            }
+                    }
+                }
+
         Self {
             symbol,
             bids: BTreeMap::new(),
@@ -127,6 +175,8 @@ impl MyApp {
             update_buffer: VecDeque::new(),
             refetch_tx,
             kmeans_mode: false,
+            price_prec,
+            qty_prec,
         }
     }
 
@@ -297,10 +347,10 @@ impl eframe::App for MyApp {
 
                             for (price, qty) in self.asks.iter().take(20).rev() {
                                 ui.label("");
-                                ui.label(format!("{:.5}", price.to_f64().unwrap_or(0.0)));
+                                ui.label(format!("{:.1$}", price.to_f64().unwrap_or(0.0), self.price_prec));
                                 ui.label(format!(
-                                    "{:.0}",
-                                    qty.iter().sum::<Decimal>().to_f64().unwrap_or(0.0)
+                                    "{:.1$}",
+                                    qty.iter().sum::<Decimal>().to_f64().unwrap_or(0.0), self.qty_prec
                                 ));
                                 ui.end_row();
                             }
@@ -312,10 +362,10 @@ impl eframe::App for MyApp {
 
                             for (price, qty) in self.bids.iter().rev().take(20) {
                                 ui.label("");
-                                ui.label(format!("{:.5}", price.to_f64().unwrap_or(0.0)));
+                                ui.label(format!("{:.1$}", price.to_f64().unwrap_or(0.0), self.price_prec));
                                 ui.label(format!(
-                                    "{:.0}",
-                                    qty.iter().sum::<Decimal>().to_f64().unwrap_or(0.0)
+                                    "{:.1$}",
+                                    qty.iter().sum::<Decimal>().to_f64().unwrap_or(0.0), self.qty_prec
                                 ));
                                 ui.end_row();
                             }
@@ -530,9 +580,9 @@ impl eframe::App for MyApp {
                                         Text::new(
                                             "bid",
                                             PlotPoint::new(x, -max_qty * 0.05),
-                                            format!("{:.5}", price.to_f64().unwrap_or(0.0)),
+                                            format!("{:.1$}", price.to_f64().unwrap_or(0.0), self.price_prec),
                                         )
-                                        .anchor(Align2::CENTER_BOTTOM),
+                                            .anchor(Align2::CENTER_BOTTOM),
                                     );
                                 }
                             }
@@ -548,9 +598,9 @@ impl eframe::App for MyApp {
                                         Text::new(
                                             "ask",
                                             PlotPoint::new(x, -max_qty * 0.05),
-                                            format!("{:.5}", price.to_f64().unwrap_or(0.0)),
+                                            format!("{:.1$}", price.to_f64().unwrap_or(0.0), self.price_prec),
                                         )
-                                        .anchor(Align2::CENTER_BOTTOM),
+                                            .anchor(Align2::CENTER_BOTTOM),
                                     );
                                 }
                             }
