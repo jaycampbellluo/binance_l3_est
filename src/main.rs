@@ -1,7 +1,10 @@
+mod kmeans;
+
 use eframe::egui;
 use egui::{Align2, Color32};
 use egui_plot::{Bar, BarChart, Plot, PlotPoint, Text};
 use futures_util::{SinkExt, StreamExt};
+use once_cell::sync::Lazy;
 use rust_decimal::Decimal;
 use rust_decimal::prelude::*;
 use serde::Deserialize;
@@ -11,12 +14,6 @@ use std::sync::mpsc::{self as std_mpsc, Receiver as StdReceiver, Sender as StdSe
 use std::thread;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
-
-#[derive(Deserialize, Debug, PartialOrd, PartialEq)]
-struct Level {
-    price: Decimal,
-    qty: Decimal,
-}
 
 #[derive(Deserialize)]
 struct OrderBookSnapshot {
@@ -48,6 +45,36 @@ enum AppMessage {
     Update(DepthUpdate),
 }
 
+static BID_COLORS: Lazy<Vec<Color32>> = Lazy::new(|| {
+    vec![
+        Color32::from_rgb(222, 235, 247), // Light Blue
+        Color32::from_rgb(204, 227, 245), // Lighter Blue
+        Color32::from_rgb(158, 202, 225), // Blue
+        Color32::from_rgb(129, 189, 231), // Light Medium Blue
+        Color32::from_rgb(107, 174, 214), // Medium Blue
+        Color32::from_rgb(78, 157, 202),  // Medium Deep Blue
+        Color32::from_rgb(49, 130, 189),  // Deep Blue
+        Color32::from_rgb(33, 113, 181),  // Darker Deep Blue
+        Color32::from_rgb(16, 96, 168),   // Dark Blue
+        Color32::from_rgb(8, 81, 156),    // Darkest Blue
+    ]
+});
+
+static ASK_COLORS: Lazy<Vec<Color32>> = Lazy::new(|| {
+    vec![
+        Color32::from_rgb(254, 230, 206), // Light Orange
+        Color32::from_rgb(253, 216, 186), // Lighter Orange
+        Color32::from_rgb(253, 174, 107), // Orange
+        Color32::from_rgb(253, 159, 88),  // Light Deep Orange
+        Color32::from_rgb(253, 141, 60),  // Deep Orange
+        Color32::from_rgb(245, 126, 47),  // Medium Red-Orange
+        Color32::from_rgb(230, 85, 13),   // Red-Orange
+        Color32::from_rgb(204, 75, 12),   // Darker Red-Orange
+        Color32::from_rgb(179, 65, 10),   // Dark Red
+        Color32::from_rgb(166, 54, 3),    // Darkest Red
+    ]
+});
+
 fn main() -> eframe::Result {
     // Fetch the symbol from command-line arguments or default to DOGEUSDT
     let args: Vec<String> = env::args().collect();
@@ -74,6 +101,7 @@ struct MyApp {
     rx: StdReceiver<AppMessage>,
     update_buffer: VecDeque<DepthUpdate>,
     refetch_tx: Sender<()>,
+    kmeans_mode: bool,
 }
 
 impl MyApp {
@@ -98,6 +126,7 @@ impl MyApp {
             rx,
             update_buffer: VecDeque::new(),
             refetch_tx,
+            kmeans_mode: false,
         }
     }
 
@@ -155,9 +184,8 @@ impl MyApp {
             });
 
             let client = reqwest::Client::new();
-            let snap_url = format!(
-                "https://fapi.binance.com/fapi/v1/depth?symbol={symbol}&limit=1000"
-            ); // Use symbol
+            let snap_url =
+                format!("https://fapi.binance.com/fapi/v1/depth?symbol={symbol}&limit=1000"); // Use symbol
             match client.get(snap_url).send().await {
                 Ok(resp) => match resp.json::<OrderBookSnapshot>().await {
                     Ok(snap) => {
@@ -249,7 +277,13 @@ impl eframe::App for MyApp {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading(format!("{} Perpetual Order Book", self.symbol.to_uppercase()));
+            ui.heading(format!(
+                "{} Perpetual Order Book",
+                self.symbol.to_uppercase()
+            ));
+            if ui.button("Toggle K-Means Mode").clicked() {
+                self.kmeans_mode = !self.kmeans_mode;
+            }
 
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
@@ -318,7 +352,7 @@ impl eframe::App for MyApp {
 
                     let step = 1.0;
                     let mut bars: Vec<Bar> = Vec::new();
-                    // Compute max individual order sizes
+
                     let max_bid_order: Decimal = self
                         .bids
                         .values()
@@ -360,52 +394,123 @@ impl eframe::App for MyApp {
                         orders.get(1).cloned().unwrap_or(Decimal::ZERO)
                     };
 
-                    for (i, (_, qty_deq)) in self.asks.iter().take(100).enumerate() {
-                        let x = (i as f64 + 0.5) * step + 0.5;
-                        let mut offset = 0.0;
+                    if !self.kmeans_mode {
+                        for (i, (_, qty_deq)) in self.asks.iter().take(100).enumerate() {
+                            let x = (i as f64 + 0.5) * step + 0.5;
+                            let mut offset = 0.0;
 
-                        for (j, &qty) in qty_deq.iter().enumerate() {
-                            if qty <= dec!(0.0) {
-                                continue;
+                            for (j, &qty) in qty_deq.iter().enumerate() {
+                                if qty <= dec!(0.0) {
+                                    continue;
+                                }
+                                let color = if qty == max_ask_order {
+                                    Color32::GOLD
+                                } else if qty == second_max_ask_order {
+                                    Color32::from_rgb(184, 134, 11)
+                                } else {
+                                    self.get_order_color(j, Color32::DARK_RED)
+                                };
+                                let bar = Bar::new(x, qty.to_f64().unwrap_or(0.0))
+                                    .fill(color)
+                                    .base_offset(offset)
+                                    .width(step * 0.9);
+                                bars.push(bar);
+                                offset += qty.to_f64().unwrap_or(0.0);
                             }
-                            let color = if qty == max_ask_order {
-                                Color32::GOLD
-                            } else if qty == second_max_ask_order {
-                                Color32::from_rgb(184, 134, 11)
-                            } else {
-                                self.get_order_color(j, Color32::DARK_RED)
-                            };
-                            let bar = Bar::new(x, qty.to_f64().unwrap_or(0.0))
-                                .fill(color)
-                                .base_offset(offset)
-                                .width(step * 0.9);
-                            bars.push(bar);
-                            offset += qty.to_f64().unwrap_or(0.0);
                         }
-                    }
 
-                    // Color Mapping for Bids
-                    for (i, (_, qty_deq)) in self.bids.iter().rev().take(100).enumerate() {
-                        let x = -(i as f64 + 0.5) * step - 0.5;
-                        let mut offset = 0.0;
+                        // Color Mapping for Bids
+                        for (i, (_, qty_deq)) in self.bids.iter().rev().take(100).enumerate() {
+                            let x = -(i as f64 + 0.5) * step - 0.5;
+                            let mut offset = 0.0;
 
-                        for (j, &qty) in qty_deq.iter().enumerate() {
-                            if qty <= dec!(0.0) {
-                                continue;
+                            for (j, &qty) in qty_deq.iter().enumerate() {
+                                if qty <= dec!(0.0) {
+                                    continue;
+                                }
+                                let color = if qty == max_bid_order {
+                                    Color32::GOLD
+                                } else if qty == second_max_bid_order {
+                                    Color32::from_rgb(184, 134, 11)
+                                } else {
+                                    self.get_order_color(j, Color32::DARK_GREEN)
+                                };
+                                let bar = Bar::new(x, qty.to_f64().unwrap_or(0.0))
+                                    .fill(color)
+                                    .base_offset(offset)
+                                    .width(step * 0.9);
+                                bars.push(bar);
+                                offset += qty.to_f64().unwrap_or(0.0);
                             }
-                            let color = if qty == max_bid_order {
-                                Color32::GOLD
-                            } else if qty == second_max_bid_order {
-                                Color32::from_rgb(184, 134, 11)
-                            } else {
-                                self.get_order_color(j, Color32::DARK_GREEN)
-                            };
-                            let bar = Bar::new(x, qty.to_f64().unwrap_or(0.0))
-                                .fill(color)
-                                .base_offset(offset)
-                                .width(step * 0.9);
-                            bars.push(bar);
-                            offset += qty.to_f64().unwrap_or(0.0);
+                        }
+                    } else {
+                        let asks_for_cluster: BTreeMap<Decimal, VecDeque<Decimal>> = self
+                            .asks
+                            .iter()
+                            .take(100)
+                            .map(|(&k, v)| (k, v.clone()))
+                            .collect();
+                        let clustered_asks = kmeans::cluster_order_book(&asks_for_cluster, 10);
+
+                        let bids_for_cluster: BTreeMap<Decimal, VecDeque<Decimal>> = self
+                            .bids
+                            .iter()
+                            .rev()
+                            .take(100)
+                            .map(|(&k, v)| (k, v.clone()))
+                            .collect();
+                        let clustered_bids = kmeans::cluster_order_book(&bids_for_cluster, 10);
+
+                        // Asks in K-Means mode
+                        for (i, (_, qty_deq)) in clustered_asks.iter().enumerate() {
+                            let x = (i as f64 + 0.5) * step + 0.5;
+                            let mut offset = 0.0;
+
+                            for &(qty, cluster) in qty_deq.iter() {
+                                if qty <= dec!(0.0) {
+                                    continue;
+                                }
+                                let color = if qty == max_ask_order {
+                                    Color32::GOLD
+                                } else {
+                                    ASK_COLORS
+                                        .get(cluster % ASK_COLORS.len())
+                                        .cloned()
+                                        .unwrap_or(Color32::GRAY)
+                                };
+                                let bar = Bar::new(x, qty.to_f64().unwrap_or(0.0))
+                                    .fill(color)
+                                    .base_offset(offset)
+                                    .width(step * 0.9);
+                                bars.push(bar);
+                                offset += qty.to_f64().unwrap_or(0.0);
+                            }
+                        }
+
+                        // Bids in K-Means mode
+                        for (i, (_, qty_deq)) in clustered_bids.iter().rev().enumerate() {
+                            let x = -(i as f64 + 0.5) * step - 0.5;
+                            let mut offset = 0.0;
+
+                            for &(qty, cluster) in qty_deq.iter() {
+                                if qty <= dec!(0.0) {
+                                    continue;
+                                }
+                                let color = if qty == max_bid_order {
+                                    Color32::GOLD
+                                } else {
+                                    BID_COLORS
+                                        .get(cluster % BID_COLORS.len())
+                                        .cloned()
+                                        .unwrap_or(Color32::GRAY)
+                                };
+                                let bar = Bar::new(x, qty.to_f64().unwrap_or(0.0))
+                                    .fill(color)
+                                    .base_offset(offset)
+                                    .width(step * 0.9);
+                                bars.push(bar);
+                                offset += qty.to_f64().unwrap_or(0.0);
+                            }
                         }
                     }
 

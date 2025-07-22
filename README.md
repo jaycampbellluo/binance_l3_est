@@ -39,4 +39,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Todo
 
-- [ ] Add Cluster Algo on orders and display them with different color
+- [x] Add Cluster Algo on orders and display them with different color
