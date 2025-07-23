@@ -35,10 +35,6 @@ cargo run -r
 
 Visit the [Releases page](https://github.com/OctopusTakopi/binance_l3_est/releases) and download the latest binary release.
 
-The chart will dynamically update as new WebSocket messages are received, with bid and ask bars color-coded based on the order age.
-
-Note: Allow enough time for the estimator to start working as it processes the historical L2 data.
-
 The chart dynamically updates as new WebSocket messages are received, and the bars for bids and asks are color-coded based on the order age, in K-means mode it based on the order size.
 
 > **Note:** Allow enough time for the estimator to start working as it processes the historical L2 data.
