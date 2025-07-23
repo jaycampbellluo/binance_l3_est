@@ -13,6 +13,7 @@ This project is a real-time visualization tool for the Binance perpetual swap or
 
 ## Usage
 
+#### From source
 To try the project, you'll need to have Rust installed on your system. You can install it from [https://www.rust-lang.org/](https://www.rust-lang.org/).
 
 1. Clone the repository:
@@ -26,6 +27,11 @@ add cmd arg the trading pair you want to see
 ```bash
 cargo run -r dogeusdt
 ```
+or
+
+#### From release binray
+
+go https://github.com/OctopusTakopi/binance_l3_est/releases download the newest release binary.
 
 The chart dynamically updates as new WebSocket messages are received, and the bars for bids and asks are color-coded based on the order age.
 

@@ -176,24 +176,26 @@ impl MyApp {
         let url = "https://fapi.binance.com/fapi/v1/exchangeInfo".to_string();
         if let Ok(resp) = blocking::get(&url)
             && let Ok(info) = resp.json::<ExchangeInfo>()
-                && let Some(sym_info) = info.symbols.into_iter().find(|s| s.symbol == *symbol) {
-                    for filter in sym_info.filters {
-                        if filter.filter_type == "PRICE_FILTER" {
-                            if let Some(ts) = filter.tick_size {
-                                let tick_size = ts.parse::<f64>().unwrap_or(1.0);
-                                if tick_size > 0.0 {
-                                    *price_prec = (-tick_size.log10()).ceil() as usize;
-                                }
-                            }
-                        } else if filter.filter_type == "LOT_SIZE"
-                            && let Some(ss) = filter.step_size {
-                                let step_size = ss.parse::<f64>().unwrap_or(1.0);
-                                if step_size > 0.0 {
-                                    *qty_prec = (-step_size.log10()).ceil() as usize;
-                                }
-                            }
+            && let Some(sym_info) = info.symbols.into_iter().find(|s| s.symbol == *symbol)
+        {
+            for filter in sym_info.filters {
+                if filter.filter_type == "PRICE_FILTER" {
+                    if let Some(ts) = filter.tick_size {
+                        let tick_size = ts.parse::<f64>().unwrap_or(1.0);
+                        if tick_size > 0.0 {
+                            *price_prec = (-tick_size.log10()).ceil() as usize;
+                        }
+                    }
+                } else if filter.filter_type == "LOT_SIZE"
+                    && let Some(ss) = filter.step_size
+                {
+                    let step_size = ss.parse::<f64>().unwrap_or(1.0);
+                    if step_size > 0.0 {
+                        *qty_prec = (-step_size.log10()).ceil() as usize;
                     }
                 }
+            }
+        }
     }
 
     async fn fetch_and_stream_loop(
