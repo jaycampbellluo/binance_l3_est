@@ -45,6 +45,7 @@ struct OrderBookSnapshot {
     asks: Vec<Vec<Decimal>>,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Clone)]
 struct DepthUpdate {
     e: String,
