@@ -3,9 +3,9 @@ name: Release
 on:
   push:
     tags:
-      - 'v*' # Line 6
-  workflow_dispatch:
-  
+      - 'v*'
+  workflow_dispatch
+
 permissions:
   contents: write
 
@@ -58,12 +58,14 @@ jobs:
       - name: Rename binary (non-Windows)
         if: runner.os != 'Windows'
         run: |
-          mv ${{ steps.set-ext.outputs.binary_path }} target/release/binance_l3_est-${{ runner.os }}-${{ runner.arch }}${{ steps.set-ext.outputs.extension }}
+          mv -f ${{ steps.set-ext.outputs.binary_path }} target/release/binance_l3_est-${{ runner.os }}-${{ runner.arch }}${{ steps.set-ext.outputs.extension }}
         shell: bash
 
       - name: Rename binary (Windows)
         if: runner.os == 'Windows'
         run: |
+          $dest = "target/release/binance_l3_est-${{ runner.os }}-${{ runner.arch }}${{ steps.set-ext.outputs.extension }}"
+          if (Test-Path $dest) { Remove-Item $dest -Force }
           Rename-Item -Path "${{ steps.set-ext.outputs.binary_path }}" -NewName "binance_l3_est-${{ runner.os }}-${{ runner.arch }}${{ steps.set-ext.outputs.extension }}"
         shell: pwsh
 
