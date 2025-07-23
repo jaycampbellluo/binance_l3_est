@@ -2,6 +2,11 @@
 name = "binance_l3_est"
 version = "0.1.0"
 edition = "2024"
+authors = ["OctopusTakopi"]
+repository = "https://github.com/OctopusTakopi/binance_l3_est"
+readme = "README.md"
+license = "MIT"
+keywords = ["order book", "binance", "trading", "hft", "visualization"]
 
 [dependencies]
 eframe = "0.32.0"

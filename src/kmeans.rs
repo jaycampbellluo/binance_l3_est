@@ -169,6 +169,7 @@ impl MiniBatchKMeans {
 }
 
 // Usage in cluster_order_book
+#[allow(dead_code)]
 pub fn cluster_order_book(
     order_book: &BTreeMap<Decimal, VecDeque<Decimal>>,
     num_classes: usize,
