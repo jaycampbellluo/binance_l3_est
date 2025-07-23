@@ -4,7 +4,7 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
+  workflow_dispatch
 
 permissions:
   contents: write
@@ -18,7 +18,7 @@ jobs:
         rust: [stable]
     steps:
       - name: Checkout repository
-        useslightbox: actions/checkout@v4
+        uses: actions/checkout@v4
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@master
@@ -74,7 +74,7 @@ jobs:
           path: target/release/binance_l3_est-${{ runner.os }}-${{ runner.arch }}${{ steps.set-ext.outputs.extension }}
 
       - name: Upload release assets
-        if: github.event_name == 'push' # Only run on tag push
+        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
           files: |
