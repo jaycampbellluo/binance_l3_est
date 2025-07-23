@@ -739,7 +739,6 @@ impl MyApp {
                                 old_qty.push_back(change);
                             }
                         } else {
-                            // ??
                             continue;
                         }
                     } else {
@@ -771,7 +770,6 @@ impl MyApp {
                         old_qty.push_back(change);
                     }
                 } else {
-                    // ??
                     continue;
                 }
             } else {

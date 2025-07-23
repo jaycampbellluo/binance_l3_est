@@ -10,11 +10,13 @@ This project is a real-time visualization tool for the Binance perpetual swap or
 * **Bid/Ask Visualization**: Displays the current bids and asks for the binance perpetual swap.
 * **Order Queue Estimation**: Estimates the order queue at each price level using L2 data.
 * **Dynamic Bar Coloring**: Bid and ask bars are dynamically colored based on the age of the order.
+* **K-Means Cluster**: Auto classification for different market participants
 
 ## Usage
 
-#### From source
-To try the project, you'll need to have Rust installed on your system. You can install it from [https://www.rust-lang.org/](https://www.rust-lang.org/).
+#### From Source
+
+To try out the project, ensure you have Rust installed. You can install it from [https://www.rust-lang.org](https://www.rust-lang.org).
 
 1. Clone the repository:
 
@@ -23,26 +25,24 @@ git clone https://github.com/OctopusTakopi/binance_l3_est.git
 cd binance_l3_est
 ```
 
-add cmd arg the trading pair you want to see
+2. Run the project with a trading pair of your choice:
+
 ```bash
-cargo run -r dogeusdt
+cargo run -r
 ```
-or
 
-#### From release binray
+#### From Release Binary
 
-go https://github.com/OctopusTakopi/binance_l3_est/releases download the newest release binary.
+Visit the [Releases page](https://github.com/OctopusTakopi/binance_l3_est/releases) and download the latest binary release.
 
-The chart dynamically updates as new WebSocket messages are received, and the bars for bids and asks are color-coded based on the order age.
+The chart will dynamically update as new WebSocket messages are received, with bid and ask bars color-coded based on the order age.
 
-#### P.S. You need enough time to wait for the estimator to start working based on the history L2 data.
+Note: Allow enough time for the estimator to start working as it processes the historical L2 data.
+
+The chart dynamically updates as new WebSocket messages are received, and the bars for bids and asks are color-coded based on the order age, in K-means mode it based on the order size.
+
+> **Note:** Allow enough time for the estimator to start working as it processes the historical L2 data.
 
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
-
-## Todo
-
-- [x] Add Cluster Algo on orders and display them with different color

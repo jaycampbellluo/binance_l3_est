@@ -196,7 +196,7 @@ pub fn cluster_order_book(
     clustered_orders
 }
 
-// Helper function to build clustered orders (assuming it's defined in kmeans.rs)
+// Helper function to build clustered orders
 pub fn build_clustered_orders(
     order_book: &BTreeMap<Decimal, VecDeque<Decimal>>,
     labels: &[usize],
