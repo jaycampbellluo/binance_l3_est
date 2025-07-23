@@ -133,6 +133,7 @@ struct MyApp {
     kmeans_mode: bool,
     price_prec: usize,
     qty_prec: usize,
+    brighter_step: usize,
     batch_size: usize,
     max_iter: usize,
 }
@@ -167,6 +168,7 @@ impl MyApp {
             kmeans_mode: false,
             price_prec,
             qty_prec,
+            brighter_step: 5,
             batch_size: 1024,
             max_iter: 1024,
         }
@@ -362,7 +364,6 @@ impl eframe::App for MyApp {
             if ui.button("Toggle K-Means Mode").clicked() {
                 self.kmeans_mode = !self.kmeans_mode;
             }
-
             ui.horizontal(|ui| {
                 ui.label("Symbol:");
                 ui.text_edit_singleline(&mut self.edited_symbol);
@@ -385,12 +386,17 @@ impl eframe::App for MyApp {
 
             if self.kmeans_mode {
                 ui.horizontal(|ui| {
-                    ui.label("Batch Size:");
+                    ui.label("K-means Batch Size:");
                     ui.add(egui::Slider::new(&mut self.batch_size, 32..=2048));
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Max Iter:");
+                    ui.label("K-means Max Iter:");
                     ui.add(egui::Slider::new(&mut self.max_iter, 64..=2048));
+                });
+            } else {
+                ui.horizontal(|ui| {
+                    ui.label("Age mode brighter step %:");
+                    ui.add(egui::Slider::new(&mut self.brighter_step, 1..=10));
                 });
             }
 
@@ -527,7 +533,11 @@ impl eframe::App for MyApp {
                                 } else if qty == second_max_ask_order {
                                     Color32::from_rgb(184, 134, 11)
                                 } else {
-                                    self.get_order_color(j, Color32::DARK_RED)
+                                    self.get_order_color(
+                                        j,
+                                        Color32::DARK_RED,
+                                        self.brighter_step as f32 / 100.0,
+                                    )
                                 };
                                 let bar = Bar::new(x, qty.to_f64().unwrap_or(0.0))
                                     .fill(color)
@@ -552,7 +562,11 @@ impl eframe::App for MyApp {
                                 } else if qty == second_max_bid_order {
                                     Color32::from_rgb(184, 134, 11)
                                 } else {
-                                    self.get_order_color(j, Color32::DARK_GREEN)
+                                    self.get_order_color(
+                                        j,
+                                        Color32::DARK_GREEN,
+                                        self.brighter_step as f32 / 100.0,
+                                    )
                                 };
                                 let bar = Bar::new(x, qty.to_f64().unwrap_or(0.0))
                                     .fill(color)
@@ -698,9 +712,9 @@ impl eframe::App for MyApp {
 
 impl MyApp {
     // Function to calculate color based on the order index
-    fn get_order_color(&self, index: usize, base_color: Color32) -> Color32 {
+    fn get_order_color(&self, index: usize, base_color: Color32, step: f32) -> Color32 {
         // Brighten the color by 5% for each order index
-        let brightening_factor = 1.0 + 0.05 * index as f32; // 5% brighter per order
+        let brightening_factor = 1.0 + step * index as f32; // 5% brighter per order
         let r = (base_color.r() as f32 * brightening_factor).min(255.0) as u8;
         let g = (base_color.g() as f32 * brightening_factor).min(255.0) as u8;
         let b = (base_color.b() as f32 * brightening_factor).min(255.0) as u8;
