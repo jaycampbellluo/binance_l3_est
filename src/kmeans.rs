@@ -172,14 +172,37 @@ impl MiniBatchKMeans {
 pub fn cluster_order_book(
     order_book: &BTreeMap<Decimal, VecDeque<Decimal>>,
     num_classes: usize,
+    batch_size: usize,
+    max_iter: usize,
 ) -> BTreeMap<Decimal, VecDeque<(Decimal, usize)>> {
-    let mut kmeans = MiniBatchKMeans::new(num_classes, 1024, 1024); // batch_size 32, max_iter 100
+    let mut kmeans = MiniBatchKMeans::new(num_classes, batch_size, max_iter);
 
     let labels = kmeans.fit(order_book);
 
     let mut clustered_orders: BTreeMap<Decimal, VecDeque<(Decimal, usize)>> = BTreeMap::new();
 
     let mut idx = 0;
+    for (&price, deq) in order_book.iter() {
+        let entry = clustered_orders.entry(price).or_default();
+        for &qty in deq.iter() {
+            if qty > Decimal::ZERO {
+                entry.push_back((qty, labels[idx]));
+                idx += 1;
+            }
+        }
+    }
+
+    clustered_orders
+}
+
+// Helper function to build clustered orders (assuming it's defined in kmeans.rs)
+pub fn build_clustered_orders(
+    order_book: &BTreeMap<Decimal, VecDeque<Decimal>>,
+    labels: &[usize],
+) -> BTreeMap<Decimal, VecDeque<(Decimal, usize)>> {
+    let mut clustered_orders: BTreeMap<Decimal, VecDeque<(Decimal, usize)>> = BTreeMap::new();
+    let mut idx = 0;
+
     for (&price, deq) in order_book.iter() {
         let entry = clustered_orders.entry(price).or_default();
         for &qty in deq.iter() {

@@ -5,6 +5,7 @@ use egui::{Align2, Color32};
 use egui_plot::{Bar, BarChart, Plot, PlotPoint, Text};
 use futures_util::{SinkExt, StreamExt};
 use once_cell::sync::Lazy;
+use reqwest::blocking;
 use rust_decimal::Decimal;
 use rust_decimal::prelude::*;
 use serde::Deserialize;
@@ -66,6 +67,11 @@ enum AppMessage {
     Update(DepthUpdate),
 }
 
+enum Control {
+    Refetch,
+    ChangeSymbol(String),
+}
+
 static BID_COLORS: Lazy<Vec<Color32>> = Lazy::new(|| {
     vec![
         Color32::from_rgb(222, 235, 247), // Light Blue
@@ -115,79 +121,88 @@ fn main() -> eframe::Result {
 
 struct MyApp {
     symbol: String,
+    edited_symbol: String,
     bids: BTreeMap<Decimal, VecDeque<Decimal>>,
     asks: BTreeMap<Decimal, VecDeque<Decimal>>,
     last_applied_u: u64,
     is_synced: bool,
     rx: StdReceiver<AppMessage>,
     update_buffer: VecDeque<DepthUpdate>,
-    refetch_tx: Sender<()>,
+    control_tx: Sender<Control>,
     kmeans_mode: bool,
     price_prec: usize,
     qty_prec: usize,
+    batch_size: usize,
+    max_iter: usize,
 }
 
 impl MyApp {
     fn new(cc: &eframe::CreationContext<'_>, symbol: String) -> Self {
         let (tx, rx) = std_mpsc::channel();
-        let (refetch_tx, refetch_rx) = mpsc::channel(1);
+        let (control_tx, control_rx) = mpsc::channel(1);
         let ctx = cc.egui_ctx.clone();
         let s = symbol.clone();
         thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
-                Self::fetch_and_stream_loop(&tx, &ctx, refetch_rx, s).await;
+                Self::fetch_and_stream_loop(&tx, &ctx, control_rx, s).await;
             });
         });
 
-        let upper_symbol = symbol.to_uppercase();
-        let url = "https://fapi.binance.com/fapi/v1/exchangeInfo".to_string();
         let mut price_prec = 2;
         let mut qty_prec = 2;
-        if let Ok(resp) = reqwest::blocking::get(&url)
-            && let Ok(info) = resp.json::<ExchangeInfo>()
-                && let Some(sym_info) = info.symbols.into_iter().find(|s| s.symbol == upper_symbol) {
-                    for filter in sym_info.filters {
-                        if filter.filter_type == "PRICE_FILTER" {
-                            if let Some(ts) = filter.tick_size {
-                                let tick_size = ts.parse::<f64>().unwrap_or(1.0);
-                                if tick_size > 0.0 {
-                                    price_prec = (-tick_size.log10()).ceil() as usize;
-                                }
-                            }
-                        } else if filter.filter_type == "LOT_SIZE"
-                            && let Some(ss) = filter.step_size {
-                                let step_size = ss.parse::<f64>().unwrap_or(1.0);
-                                if step_size > 0.0 {
-                                    qty_prec = (-step_size.log10()).ceil() as usize;
-                                }
-                            }
-                    }
-                }
+        Self::fetch_precision(&symbol.to_uppercase(), &mut price_prec, &mut qty_prec);
 
         Self {
-            symbol,
+            symbol: symbol.clone(),
+            edited_symbol: symbol,
             bids: BTreeMap::new(),
             asks: BTreeMap::new(),
             last_applied_u: 0,
             is_synced: false,
             rx,
             update_buffer: VecDeque::new(),
-            refetch_tx,
+            control_tx,
             kmeans_mode: false,
             price_prec,
             qty_prec,
+            batch_size: 1024,
+            max_iter: 1024,
         }
+    }
+
+    fn fetch_precision(symbol: &str, price_prec: &mut usize, qty_prec: &mut usize) {
+        let url = "https://fapi.binance.com/fapi/v1/exchangeInfo".to_string();
+        if let Ok(resp) = blocking::get(&url)
+            && let Ok(info) = resp.json::<ExchangeInfo>()
+                && let Some(sym_info) = info.symbols.into_iter().find(|s| s.symbol == *symbol) {
+                    for filter in sym_info.filters {
+                        if filter.filter_type == "PRICE_FILTER" {
+                            if let Some(ts) = filter.tick_size {
+                                let tick_size = ts.parse::<f64>().unwrap_or(1.0);
+                                if tick_size > 0.0 {
+                                    *price_prec = (-tick_size.log10()).ceil() as usize;
+                                }
+                            }
+                        } else if filter.filter_type == "LOT_SIZE"
+                            && let Some(ss) = filter.step_size {
+                                let step_size = ss.parse::<f64>().unwrap_or(1.0);
+                                if step_size > 0.0 {
+                                    *qty_prec = (-step_size.log10()).ceil() as usize;
+                                }
+                            }
+                    }
+                }
     }
 
     async fn fetch_and_stream_loop(
         tx: &StdSender<AppMessage>,
         ctx: &egui::Context,
-        mut refetch_rx: Receiver<()>,
-        symbol: String, // Accept the symbol as a parameter
+        mut control_rx: Receiver<Control>,
+        mut symbol: String,
     ) {
         loop {
-            let ws_url_str = format!("wss://fstream.binance.com/ws/{symbol}@depth@0ms"); // Use symbol
+            let ws_url_str = format!("wss://fstream.binance.com/ws/{symbol}@depth@0ms");
             let (mut ws_stream, response) = match connect_async(ws_url_str).await {
                 Ok(pair) => pair,
                 Err(e) => {
@@ -234,8 +249,10 @@ impl MyApp {
             });
 
             let client = reqwest::Client::new();
-            let snap_url =
-                format!("https://fapi.binance.com/fapi/v1/depth?symbol={symbol}&limit=1000"); // Use symbol
+            let snap_url = format!(
+                "https://fapi.binance.com/fapi/v1/depth?symbol={}&limit=1000",
+                symbol.to_uppercase()
+            );
             match client.get(snap_url).send().await {
                 Ok(resp) => match resp.json::<OrderBookSnapshot>().await {
                     Ok(snap) => {
@@ -247,9 +264,17 @@ impl MyApp {
                 Err(e) => println!("Snapshot request error: {e:?}"),
             }
 
-            if refetch_rx.recv().await.is_some() {
+            if let Some(ctrl) = control_rx.recv().await {
                 ws_handle.abort();
-                println!("Refetch triggered, restarting connection.");
+                match ctrl {
+                    Control::Refetch => {
+                        println!("Refetch triggered, restarting connection.");
+                    }
+                    Control::ChangeSymbol(new_symbol) => {
+                        symbol = new_symbol;
+                        println!("Changing symbol to {symbol}, restarting connection.");
+                    }
+                }
             } else {
                 break;
             }
@@ -268,7 +293,7 @@ impl MyApp {
                     update.pu, self.last_applied_u
                 );
                 self.update_buffer.clear();
-                let _ = self.refetch_tx.try_send(());
+                let _ = self.control_tx.try_send(Control::Refetch);
                 return;
             }
             self.apply_update(&update);
@@ -283,7 +308,7 @@ impl MyApp {
                 update.capital_u, update.small_u, self.last_applied_u
             );
             self.update_buffer.clear();
-            let _ = self.refetch_tx.try_send(());
+            let _ = self.control_tx.try_send(Control::Refetch);
         }
     }
 }
@@ -336,6 +361,37 @@ impl eframe::App for MyApp {
             }
 
             ui.horizontal(|ui| {
+                ui.label("Symbol:");
+                ui.text_edit_singleline(&mut self.edited_symbol);
+                if ui.button("Change Symbol").clicked() && self.edited_symbol != self.symbol {
+                    Self::fetch_precision(
+                        &self.edited_symbol.to_uppercase(),
+                        &mut self.price_prec,
+                        &mut self.qty_prec,
+                    );
+                    let _ = self
+                        .control_tx
+                        .try_send(Control::ChangeSymbol(self.edited_symbol.clone()));
+                    self.symbol = self.edited_symbol.clone();
+                    self.bids.clear();
+                    self.asks.clear();
+                    self.last_applied_u = 0;
+                    self.is_synced = false;
+                }
+            });
+
+            if self.kmeans_mode {
+                ui.horizontal(|ui| {
+                    ui.label("Batch Size:");
+                    ui.add(egui::Slider::new(&mut self.batch_size, 32..=2048));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Max Iter:");
+                    ui.add(egui::Slider::new(&mut self.max_iter, 64..=2048));
+                });
+            }
+
+            ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     egui::Grid::new("order_book_grid")
                         .striped(true)
@@ -347,10 +403,15 @@ impl eframe::App for MyApp {
 
                             for (price, qty) in self.asks.iter().take(20).rev() {
                                 ui.label("");
-                                ui.label(format!("{:.1$}", price.to_f64().unwrap_or(0.0), self.price_prec));
                                 ui.label(format!(
                                     "{:.1$}",
-                                    qty.iter().sum::<Decimal>().to_f64().unwrap_or(0.0), self.qty_prec
+                                    price.to_f64().unwrap_or(0.0),
+                                    self.price_prec
+                                ));
+                                ui.label(format!(
+                                    "{:.1$}",
+                                    qty.iter().sum::<Decimal>().to_f64().unwrap_or(0.0),
+                                    self.qty_prec
                                 ));
                                 ui.end_row();
                             }
@@ -362,10 +423,15 @@ impl eframe::App for MyApp {
 
                             for (price, qty) in self.bids.iter().rev().take(20) {
                                 ui.label("");
-                                ui.label(format!("{:.1$}", price.to_f64().unwrap_or(0.0), self.price_prec));
                                 ui.label(format!(
                                     "{:.1$}",
-                                    qty.iter().sum::<Decimal>().to_f64().unwrap_or(0.0), self.qty_prec
+                                    price.to_f64().unwrap_or(0.0),
+                                    self.price_prec
+                                ));
+                                ui.label(format!(
+                                    "{:.1$}",
+                                    qty.iter().sum::<Decimal>().to_f64().unwrap_or(0.0),
+                                    self.qty_prec
                                 ));
                                 ui.end_row();
                             }
@@ -500,7 +566,11 @@ impl eframe::App for MyApp {
                             .take(100)
                             .map(|(&k, v)| (k, v.clone()))
                             .collect();
-                        let clustered_asks = kmeans::cluster_order_book(&asks_for_cluster, 10);
+                        let mut kmeans_asks =
+                            kmeans::MiniBatchKMeans::new(10, self.batch_size, self.max_iter);
+                        let labels_asks = kmeans_asks.fit(&asks_for_cluster);
+                        let clustered_asks =
+                            kmeans::build_clustered_orders(&asks_for_cluster, &labels_asks);
 
                         let bids_for_cluster: BTreeMap<Decimal, VecDeque<Decimal>> = self
                             .bids
@@ -509,7 +579,11 @@ impl eframe::App for MyApp {
                             .take(100)
                             .map(|(&k, v)| (k, v.clone()))
                             .collect();
-                        let clustered_bids = kmeans::cluster_order_book(&bids_for_cluster, 10);
+                        let mut kmeans_bids =
+                            kmeans::MiniBatchKMeans::new(10, self.batch_size, self.max_iter);
+                        let labels_bids = kmeans_bids.fit(&bids_for_cluster);
+                        let clustered_bids =
+                            kmeans::build_clustered_orders(&bids_for_cluster, &labels_bids);
 
                         // Asks in K-Means mode
                         for (i, (_, qty_deq)) in clustered_asks.iter().enumerate() {
@@ -580,9 +654,13 @@ impl eframe::App for MyApp {
                                         Text::new(
                                             "bid",
                                             PlotPoint::new(x, -max_qty * 0.05),
-                                            format!("{:.1$}", price.to_f64().unwrap_or(0.0), self.price_prec),
+                                            format!(
+                                                "{:.1$}",
+                                                price.to_f64().unwrap_or(0.0),
+                                                self.price_prec
+                                            ),
                                         )
-                                            .anchor(Align2::CENTER_BOTTOM),
+                                        .anchor(Align2::CENTER_BOTTOM),
                                     );
                                 }
                             }
@@ -598,9 +676,13 @@ impl eframe::App for MyApp {
                                         Text::new(
                                             "ask",
                                             PlotPoint::new(x, -max_qty * 0.05),
-                                            format!("{:.1$}", price.to_f64().unwrap_or(0.0), self.price_prec),
+                                            format!(
+                                                "{:.1$}",
+                                                price.to_f64().unwrap_or(0.0),
+                                                self.price_prec
+                                            ),
                                         )
-                                            .anchor(Align2::CENTER_BOTTOM),
+                                        .anchor(Align2::CENTER_BOTTOM),
                                     );
                                 }
                             }
