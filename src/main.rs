@@ -1,4 +1,5 @@
 mod kmeans;
+mod exchange_manager;
 
 use eframe::egui;
 use egui::{Align2, Color32};
@@ -63,9 +64,89 @@ struct DepthUpdate {
     a: Vec<Vec<Decimal>>,
 }
 
+const LAMBDA_RING_CAP: usize = 4096;
+
+struct LambdaRing {
+    inner: [u64; LAMBDA_RING_CAP],
+    head: usize,
+    len: usize
+}
+
+impl LambdaRing {
+    fn new() -> Self {
+        LambdaRing {
+            inner: [0u64; LAMBDA_RING_CAP],
+            head: 0,
+            len: 0,
+        }
+    }
+
+    fn push(&mut self, ts: u64) {
+        let idx = (self.head + self.len) & (LAMBDA_RING_CAP - 1);
+        self.inner[idx] = ts;
+        if self.len < LAMBDA_RING_CAP {
+            self.len += 1;
+        } else {
+            self.head = (self.head + 1) & (LAMBDA_RING_CAP - 1);
+        }
+    }
+
+    fn reset(&mut self, cutoff_ts: u64) {
+        while self.len > 0 && self.inner[self.head] < cutoff_ts {
+            self.head = (self.head + 1) & (LAMBDA_RING_CAP - 1);
+            self.len -= 1;
+        }
+    }
+
+    fn rate(&self, window_ns: u64) -> f64 {
+        self.len as f64 / window_ns as f64 * 1e-9
+    }
+}
+
+struct OrderbookMetrics {
+    mid_price: Decimal,
+    spread: Decimal,
+    order_arrival_rate: Decimal,
+    imbalance: Decimal,
+    bid_vwap: Decimal,
+    ask_vwap: Decimal,
+}
+
+impl Default for OrderbookMetrics {
+    fn default() -> Self {
+        OrderbookMetrics {
+            mid_price: Decimal::ZERO,
+            spread: Decimal::ZERO,
+            order_arrival_rate: Decimal::ZERO,
+            imbalance: Decimal::ZERO,
+            bid_vwap: Decimal::ZERO,
+            ask_vwap: Decimal::ZERO,
+        }
+    }
+}
+
+#[derive(Deserialize, Clone)]
+struct TradeUpdate {
+    e: String,
+    #[serde(rename = "E")]
+    event_time: u64,
+    #[serde(rename = "s")]
+    symbol: String,
+    #[serde(rename = "t")]
+    trade_id: u64,
+    p: Decimal,
+    q: Decimal,
+    #[serde(rename = "T")]
+    trade_time: u64,
+    #[serde(rename = "m")]
+    buyer_market_maker: bool
+}
+
+
 enum AppMessage {
     Snapshot(OrderBookSnapshot),
     Update(DepthUpdate),
+    //TradeUpdate(TradeUpdate)
 }
 
 enum Control {
@@ -129,6 +210,10 @@ struct MyApp {
     is_synced: bool,
     rx: StdReceiver<AppMessage>,
     update_buffer: VecDeque<DepthUpdate>,
+    orderbook_metrics: OrderbookMetrics,
+    order_arrival_ring: LambdaRing,
+    //last_trade: TradeUpdate,
+    //trade_excitation: Decimal,
     control_tx: Sender<Control>,
     kmeans_mode: bool,
     price_prec: usize,
@@ -164,6 +249,7 @@ impl MyApp {
             is_synced: false,
             rx,
             update_buffer: VecDeque::new(),
+            orderbook_metrics: OrderbookMetrics::default(),
             control_tx,
             kmeans_mode: false,
             price_prec,
@@ -176,9 +262,9 @@ impl MyApp {
 
     fn fetch_precision(symbol: &str, price_prec: &mut usize, qty_prec: &mut usize) {
         let url = "https://fapi.binance.com/fapi/v1/exchangeInfo".to_string();
-        if let Ok(resp) = blocking::get(&url)
-            && let Ok(info) = resp.json::<ExchangeInfo>()
-            && let Some(sym_info) = info.symbols.into_iter().find(|s| s.symbol == *symbol)
+        if let Ok(resp) = blocking::get(&url) {
+            if let Ok(info) = resp.json::<ExchangeInfo>() {
+             if let Some(sym_info) = info.symbols.into_iter().find(|s| s.symbol == *symbol) {
         {
             for filter in sym_info.filters {
                 if filter.filter_type == "PRICE_FILTER" {
@@ -188,15 +274,15 @@ impl MyApp {
                             *price_prec = (-tick_size.log10()).ceil() as usize;
                         }
                     }
-                } else if filter.filter_type == "LOT_SIZE"
-                    && let Some(ss) = filter.step_size
+                } else if filter.filter_type == "LOT_SIZE" {
+                    if let Some(ss) = filter.step_size {
                 {
                     let step_size = ss.parse::<f64>().unwrap_or(1.0);
                     if step_size > 0.0 {
                         *qty_prec = (-step_size.log10()).ceil() as usize;
                     }
-                }
-            }
+                }}}
+            }}}}
         }
     }
 
@@ -355,7 +441,7 @@ impl eframe::App for MyApp {
                 }
             }
         }
-
+        ctx.set_pixels_per_point(1.0); // temp zoom out option. could add a slider to control this or allow scrolling
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading(format!(
                 "{} Perpetual Order Book",
@@ -384,6 +470,11 @@ impl eframe::App for MyApp {
                 }
             });
 
+            // ui.horizontal(|ui| {
+            //     ui.label("test label");
+            //     ui.text_edit_singleline(&mut self.edited_symbol);
+            // });
+
             if self.kmeans_mode {
                 ui.horizontal(|ui| {
                     ui.label("K-means Batch Size:");
@@ -401,6 +492,23 @@ impl eframe::App for MyApp {
             }
 
             ui.horizontal(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Orderbook metrics:");
+                    egui::Grid::new("order_book_metrics")
+                        .striped(false)
+                        .show(ui, |ui| {
+                            ui.label("Orderbook imbalance");
+                            ui.label("Bid VWAP");
+                            ui.label("Ask VWAP");
+                            ui.end_row();
+
+                            ui.label(format!("{:.1$}", self.orderbook_metrics.imbalance, self.price_prec));
+                            ui.label(format!("{:.1$}", self.orderbook_metrics.bid_vwap, self.price_prec));
+                            ui.label(format!("{:.1$}", self.orderbook_metrics.ask_vwap, self.price_prec));
+                            ui.end_row();
+                        })
+                });
+
                 ui.vertical(|ui| {
                     egui::Grid::new("order_book_grid")
                         .striped(true)
@@ -706,6 +814,11 @@ impl eframe::App for MyApp {
                         });
                 });
             });
+            ui.horizontal(|ui| {
+                ui.label("Hype orderbook");
+                ui.text_edit_singleline(&mut self.edited_symbol);
+            }
+        )
         });
     }
 }
@@ -790,5 +903,40 @@ impl MyApp {
                 self.asks.insert(price, VecDeque::from(vec![qty]));
             }
         }
+        self.calculate_orderbook_metrics();
     }
+
+    fn calculate_orderbook_metrics(&mut self) {
+        let mut bid_qty_sum = Decimal::ZERO;
+        let mut bid_price_sum = Decimal::ZERO;
+        let mut ask_qty_sum = Decimal::ZERO;
+        let mut ask_price_sum = Decimal::ZERO;
+        let mut total_level_qty = Decimal::ZERO;
+
+        for (price, level_qtys) in &self.asks {
+            total_level_qty = level_qtys.iter().copied().sum();
+            ask_qty_sum += total_level_qty;
+            ask_price_sum += price * total_level_qty;
+        }
+
+        for (price, level_qtys) in &self.bids {
+            total_level_qty = level_qtys.iter().copied().sum();
+            bid_qty_sum += total_level_qty;
+            bid_price_sum += price * total_level_qty;
+        }
+
+        let imbalance = if bid_qty_sum + ask_qty_sum > dec!(0) {
+            (bid_qty_sum - ask_qty_sum) / (bid_qty_sum + ask_qty_sum)
+        } else {
+            Decimal::ZERO
+        };
+
+        let ask_vwap = if ask_qty_sum > dec!(0) {ask_price_sum / ask_qty_sum} else {Decimal::ZERO};
+        let bid_vwap = if bid_qty_sum > dec!(0) {bid_price_sum / bid_qty_sum} else {Decimal::ZERO};
+
+        self.orderbook_metrics.imbalance = imbalance;
+        self.orderbook_metrics.ask_vwap = ask_vwap;
+        self.orderbook_metrics.bid_vwap = bid_vwap;
+    }
+
 }
