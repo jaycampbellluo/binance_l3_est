@@ -1,4 +1,6 @@
 mod kmeans;
+mod model;
+mod ring;
 mod exchange_manager;
 
 use eframe::egui;
@@ -38,6 +40,12 @@ struct Filter {
     step_size: Option<String>,
 }
 
+#[derive(Deserialize, Serialize, Clone)]
+struct BinanceSubscriptionMessage {
+    method: String,
+    params: Vec<String>
+}
+
 #[derive(Deserialize)]
 struct OrderBookSnapshot {
     #[serde(rename = "lastUpdateId")]
@@ -63,85 +71,6 @@ struct DepthUpdate {
     b: Vec<Vec<Decimal>>,
     a: Vec<Vec<Decimal>>,
 }
-
-const LAMBDA_RING_CAP: usize = 4096;
-
-struct LambdaRing {
-    inner: [u64; LAMBDA_RING_CAP],
-    head: usize,
-    len: usize
-}
-
-impl LambdaRing {
-    fn new() -> Self {
-        LambdaRing {
-            inner: [0u64; LAMBDA_RING_CAP],
-            head: 0,
-            len: 0,
-        }
-    }
-
-    fn push(&mut self, ts: u64) {
-        let idx = (self.head + self.len) & (LAMBDA_RING_CAP - 1);
-        self.inner[idx] = ts;
-        if self.len < LAMBDA_RING_CAP {
-            self.len += 1;
-        } else {
-            self.head = (self.head + 1) & (LAMBDA_RING_CAP - 1);
-        }
-    }
-
-    fn reset(&mut self, cutoff_ts: u64) {
-        while self.len > 0 && self.inner[self.head] < cutoff_ts {
-            self.head = (self.head + 1) & (LAMBDA_RING_CAP - 1);
-            self.len -= 1;
-        }
-    }
-
-    fn rate(&self, window_ns: u64) -> f64 {
-        self.len as f64 / window_ns as f64 * 1e-9
-    }
-}
-
-struct OrderbookMetrics {
-    mid_price: Decimal,
-    spread: Decimal,
-    order_arrival_rate: Decimal,
-    imbalance: Decimal,
-    bid_vwap: Decimal,
-    ask_vwap: Decimal,
-}
-
-impl Default for OrderbookMetrics {
-    fn default() -> Self {
-        OrderbookMetrics {
-            mid_price: Decimal::ZERO,
-            spread: Decimal::ZERO,
-            order_arrival_rate: Decimal::ZERO,
-            imbalance: Decimal::ZERO,
-            bid_vwap: Decimal::ZERO,
-            ask_vwap: Decimal::ZERO,
-        }
-    }
-}
-
-#[derive(Deserialize, Clone)]
-struct TradeUpdate {
-    e: String,
-    #[serde(rename = "E")]
-    event_time: u64,
-    #[serde(rename = "s")]
-    symbol: String,
-    #[serde(rename = "t")]
-    trade_id: u64,
-    p: Decimal,
-    q: Decimal,
-    #[serde(rename = "T")]
-    trade_time: u64,
-    #[serde(rename = "m")]
-    buyer_market_maker: bool
-}
-
 
 enum AppMessage {
     Snapshot(OrderBookSnapshot),
@@ -212,8 +141,8 @@ struct MyApp {
     update_buffer: VecDeque<DepthUpdate>,
     orderbook_metrics: OrderbookMetrics,
     order_arrival_ring: LambdaRing,
-    //last_trade: TradeUpdate,
-    //trade_excitation: Decimal,
+    trade_metrics: TradeMetrics,
+    trades_ring: LambdaRing,
     control_tx: Sender<Control>,
     kmeans_mode: bool,
     price_prec: usize,
@@ -250,6 +179,9 @@ impl MyApp {
             rx,
             update_buffer: VecDeque::new(),
             orderbook_metrics: OrderbookMetrics::default(),
+            order_arrival_ring: LambdaRing{},
+            trade_metrics: TradeMetrics::default(),
+            trades_ring: LambdaRing(),
             control_tx,
             kmeans_mode: false,
             price_prec,
@@ -301,7 +233,17 @@ impl MyApp {
                     return;
                 }
             };
+
             println!("WebSocket connected: {response:?}");
+
+            let trade_sub_message = BinanceSubscriptionMessage {
+                method: "SUBSCRIBE".to_owned(),
+                params: vec![format!("{symbol}@aggTrade")]
+            };
+
+            ws_stream.send(WsMessage::Text(serde_json::to_string(&trade_sub_message).into())).await;
+
+            println!("Binance trade stream added");
 
             let tx_clone = tx.clone();
             let ctx_clone = ctx.clone();
@@ -490,6 +432,77 @@ impl eframe::App for MyApp {
                     ui.add(egui::Slider::new(&mut self.brighter_step, 1..=10));
                 });
             }
+
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Trade metrics");
+                    egui::Grid::new("trade_metrics")
+                        .striped(false)
+                        .show(ui, |ui| {
+                            ui.vertical(|ui| {
+                                egui::Grid::new("trade_excitation_periods")
+                                    .striped(false)
+                                    .show(ui, |ui| {
+                                        ui.label("Lambda - 5 micros");
+                                        ui.label("Lambda - 1 milli");
+                                        ui.label("Lambda - 1 second");
+                                        ui.label("Lambda - 30 seconds");
+                                        ui.label("Lambda - 1 minute");
+                                        ui.end_row();
+
+                                        ui.label(format!("{:.1$}", self.trade_metrics.lambda_five_micros, self.price_prec));
+                                        ui.label(format!("{:.1$}", self.trade_metrics.lambda_one_milli, self.price_prec));
+                                        ui.label(format!("{:.1$}", self.trade_metrics.lambda_one_second, self.price_prec));
+                                        ui.label(format!("{:.1$}", self.trade_metrics.lambda_thirty_seconds, self.price_prec));
+                                        ui.label(format!("{:.1$}", self.trade_metrics.lambda_one_minute, self.price_prec));
+                                        ui.end_row();
+                                    })
+                            });
+                            ui.vertical(|ui| {
+                                egui::Grid::new("trade_imbalance_periods")
+                                    .striped(false)
+                                    .show(ui, |ui| {
+                                        ui.label("Imbalance - ");
+                                        ui.label("Imbalance - ");
+                                        ui.label("Imbalance - ");
+                                        ui.end_row();
+
+                                        ui.label(format!("{:.1$}", self.trade_metrics.imbalance, self.price_prec));
+                                        ui.label(format!("{:.1$}", self.trade_metrics.imbalance, self.price_prec));
+                                        ui.label(format!("{:.1$}", self.trade_metrics.imbalance, self.price_prec));
+                                        ui.end_row();
+                                    })
+                            })
+                        })
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("Trade descriptor:");
+                    egui::Grid::new("trade_descriptor")
+                        .striped(false)
+                        .show(ui, |ui| {
+                            ui.label("");
+                    })
+                });
+                
+            });
+
+            ui.horizontal(|ui| {
+                ui.label("Orderbook metrics:");
+                egui::Grid::new("order_book_metrics")
+                    .striped(false)
+                    .show(ui, |ui| {
+                        ui.label("Orderbook imbalance");
+                        ui.label("Bid VWAP");
+                        ui.label("Ask VWAP");
+                        ui.end_row();
+
+                        ui.label(format!("{:.1$}", self.orderbook_metrics.imbalance, self.price_prec));
+                        ui.label(format!("{:.1$}", self.orderbook_metrics.bid_vwap, self.price_prec));
+                        ui.label(format!("{:.1$}", self.orderbook_metrics.ask_vwap, self.price_prec));
+                        ui.end_row();
+                    })
+            });
 
             ui.horizontal(|ui| {
                 ui.horizontal(|ui| {
