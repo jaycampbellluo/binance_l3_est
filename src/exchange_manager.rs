@@ -4,31 +4,37 @@ use std::sync::mpsc::{self as std_mpsc, Receiver as StdReceiver, Sender as StdSe
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
 
+use crate::model::*;
+use crate::glass::*;
+
 pub struct ExchangeManager {
-    ws_endpoint_url: String
+    orderbook: Glass,
+    trade_ring: String, // to be some custom ringbuffer
+    tx: StdSender<MetricUpdate>
 }
 
 impl ExchangeManager {
     fn new() -> Self {
+        let book = Glass::new();
+        let trade_ring = String::from("wasd"); // to be some custom ringbuffer init
+        let (tx, rx) = std_mpsc::channel();
 
         thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
-                Self::fetch_and_stream_loop().await;
+                Self::fetch_and_stream_loop(&tx).await;
             })
         });
 
         Self {
-            ws_endpoint_url,
+            orderbook: book,
 
         }
     }
 
     async fn fetch_and_stream_loop(
         &self,
-        exchange_data_model: ExchangeDataModel,
-        tx: &StdSender<AppMessage>,
-        ctx: &egui::Context,
+        tx: &StdSender<ExchangeUpdate>,
         mut control_rx: Receiver<Control>,
         mut symbol: String,
     ) {
@@ -38,10 +44,10 @@ impl ExchangeManager {
                 Err(e) => {
                     println!("Error connecting {} WebSocket: {e}", self.ws_endpoint_url);
                     return;
-                }};
+                }
+            };
             
             let tx_clone = tx.clone();
-            let ctx_clone = ctx.clone();
             let ws_handle = tokio::spawn(async move {
                 while let Some(result) = ws_stream.next().await {
                     match result {
@@ -71,18 +77,25 @@ impl ExchangeManager {
         }
     }
 
-    fn process_update(&mut self, update: CustomEnum) {
+    async fn add_subscription(&self, subscription: SubscriptionEnum) {
+        self.
+    }
+
+    fn process_update(&mut self, update: ExchangeUpdate) {
         match update {
-            CustomEnum::DepthUpdate => {self.handle_depth_update(update)},
-            CustomEnum::TradeUpdate => {self.handle_trade_update(update)}
+            ExchangeUpdate::DepthUpdate => {self.handle_depth_update(update)},
+            ExchangeUpdate::TradeUpdate => {self.handle_trade_update(update)}
         }
     }
 
     fn handle_depth_update(&mut self, update: DepthUpdate) {
-
+        //send to strategy thread
+        //log
+        if update.
     }
 
     fn handle_trade_update(&mut self, update: TradeUpdate) {
-
+        //send to strategy thtread
+        //log
     }
 }

@@ -1,6 +1,8 @@
 mod kmeans;
 mod model;
 mod ring;
+mod strategy;
+mod glass;
 mod exchange_manager;
 
 use eframe::egui;
@@ -11,7 +13,7 @@ use once_cell::sync::Lazy;
 use reqwest::blocking;
 use rust_decimal::Decimal;
 use rust_decimal::prelude::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 use std::env;
 use std::sync::mpsc::{self as std_mpsc, Receiver as StdReceiver, Sender as StdSender};
@@ -52,24 +54,6 @@ struct OrderBookSnapshot {
     last_update_id: u64,
     bids: Vec<Vec<Decimal>>,
     asks: Vec<Vec<Decimal>>,
-}
-
-#[allow(dead_code)]
-#[derive(Deserialize, Clone)]
-struct DepthUpdate {
-    e: String,
-    #[serde(rename = "E")]
-    event_time: u64,
-    #[serde(rename = "T")]
-    transaction_time: u64,
-    s: String,
-    #[serde(rename = "U")]
-    capital_u: u64,
-    #[serde(rename = "u")]
-    small_u: u64,
-    pu: i64,
-    b: Vec<Vec<Decimal>>,
-    a: Vec<Vec<Decimal>>,
 }
 
 enum AppMessage {
@@ -178,10 +162,6 @@ impl MyApp {
             is_synced: false,
             rx,
             update_buffer: VecDeque::new(),
-            orderbook_metrics: OrderbookMetrics::default(),
-            order_arrival_ring: LambdaRing{},
-            trade_metrics: TradeMetrics::default(),
-            trades_ring: LambdaRing(),
             control_tx,
             kmeans_mode: false,
             price_prec,
